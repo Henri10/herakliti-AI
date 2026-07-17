@@ -58,7 +58,9 @@ class Herakliti:
         if offline is not None:
             config.SETTINGS.offline = offline
         config.ensure_dirs()
-        self.memory = Memory()
+        s = config.SETTINGS
+        mem_path = config.MEMORY_PATH if s.persist_memory else None
+        self.memory = Memory.load(mem_path, max_turns=s.max_memory_turns)
         self.last_answer: Answer | None = None
         self._llm = None
         self._retriever = None
@@ -133,6 +135,7 @@ class Herakliti:
                 elapsed=time.time() - started,
                 trace=["learned a new fact from you"],
             )
+            self.memory.add(question, confirmation)
             self.last_answer = answer
             return answer
 
@@ -163,6 +166,7 @@ class Herakliti:
                 elapsed=time.time() - started,
                 trace=["learned a new fact from you"],
             )
+            self.memory.add(question, confirmation)
             yield confirmation
             return
 

@@ -437,6 +437,9 @@ def chat(model: ModelOpt = None, offline: OfflineOpt = False, verbose: VerboseOp
             padding=(0, 1),
         )
     )
+    if len(h.memory):
+        n = len(h.memory)
+        console.print(f"[dim]Resuming — {n} exchange{'s' if n != 1 else ''} from before. /clear to start fresh.[/dim]")
 
     # Load the model now, behind a spinner, rather than stalling silently on the first
     # message. The weights take a few seconds to map; doing it here keeps the first reply
@@ -483,6 +486,7 @@ def _slash(h: "Herakliti", line: str, history: list[tuple[str, "Answer"]], spec:
 
     if cmd == "/clear":
         history.clear()
+        h.memory.clear()  # also drops the persisted file — a fresh restart starts clean too
         console.clear()
         console.print("[dim]Transcript cleared.[/dim]")
 

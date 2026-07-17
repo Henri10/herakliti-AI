@@ -23,6 +23,7 @@ CACHE_DIR: Path = HOME / "cache"
 
 DB_PATH: Path = INDEX_DIR / "herakliti.db"
 FAISS_PATH: Path = INDEX_DIR / "faiss.bin"
+MEMORY_PATH: Path = INDEX_DIR / "conversation.json"
 
 
 def ensure_dirs() -> None:
@@ -117,6 +118,8 @@ class Settings:
     # --- behaviour ---
     offline: bool = field(default_factory=lambda: _env("OFFLINE", "0") == "1")
     verbose: bool = field(default_factory=lambda: _env("VERBOSE", "0") == "1")
+    max_memory_turns: int = field(default_factory=lambda: _env_int("MAX_MEMORY_TURNS", 6))
+    persist_memory: bool = field(default_factory=lambda: _env("PERSIST_MEMORY", "1") == "1")
 
 
 SETTINGS = Settings()

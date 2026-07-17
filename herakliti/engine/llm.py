@@ -23,53 +23,78 @@ log = logging.getLogger(__name__)
 
 _INSTANCES: dict[tuple, "LLM"] = {}
 
-# Held at module scope on purpose. A ctypes callback that gets garbage-collected and is
-# then invoked by the C library raises "Exception ignored on calling ctypes callback
-# function" — the exact noise the Vulkan backend was spraying into the chat prompt. Keeping
-# a permanent reference is what stops that.
-_LOG_CALLBACK: Any = None
-_LOGS_SILENCED = False
+_LOGGING_QUIETED = False
 
 
-def _silence_llama_logs() -> None:
-    """Route llama.cpp's C-level logging (ggml/Vulkan device dumps included) into a no-op.
+def _quiet_llama_logging() -> None:
+    """Raise llama-cpp-python's own log gate to CRITICAL instead of installing our own
+    callback.
 
-    Passing verbose=False is not enough: the Vulkan backend logs through a callback during
-    init, on its own thread, and the default handler was both printing device chatter and
-    raising mid-callback. A single silent, never-collected callback replaces it cleanly.
+    llama_cpp/_logger.py registers a persistent, module-level callback at import time —
+    it never gets garbage-collected, so it is not the source of noise. It gates on Python's
+    "llama-cpp-python" logger level, which verbose=False already sets to ERROR; this just
+    raises the bar further. Swapping in our own callback instead (an earlier attempt) risked
+    exactly the ctypes-callback-GC hazard this avoids: replacing a live C-side function
+    pointer mid-flight, with a message already in transit, is how "Exception ignored on
+    calling ctypes callback function" happens. Cooperating with their gate is the safe path.
     """
-    global _LOG_CALLBACK, _LOGS_SILENCED
-    if _LOGS_SILENCED or config.SETTINGS.verbose:
+    global _LOGGING_QUIETED
+    if _LOGGING_QUIETED or config.SETTINGS.verbose:
         return
-    try:
-        import ctypes
+    logging.getLogger("llama-cpp-python").setLevel(logging.CRITICAL)
+    _LOGGING_QUIETED = True
 
-        import llama_cpp
 
-        @llama_cpp.llama_log_callback
-        def _sink(level, text, user_data):  # noqa: ARG001 - fixed C ABI signature
-            pass
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
 
-        _LOG_CALLBACK = _sink  # keep the reference alive for the process lifetime
-        llama_cpp.llama_log_set(_sink, ctypes.c_void_p(0))
-        _LOGS_SILENCED = True
-    except Exception:  # pragma: no cover - never let log-silencing break loading
-        log.debug("could not install silent llama log callback", exc_info=True)
+    _kernel32 = ctypes.windll.kernel32
+    _kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+    _kernel32.GetStdHandle.restype = wintypes.HANDLE
+    _kernel32.SetStdHandle.argtypes = [wintypes.DWORD, wintypes.HANDLE]
+    _kernel32.SetStdHandle.restype = wintypes.BOOL
+    _STD_ERROR_HANDLE = wintypes.DWORD(-12).value  # WinBase.h
 
 
 @contextmanager
 def _quiet():
-    """Belt-and-suspenders for any raw writes to fd 2 that bypass the log callback."""
+    """Mute stderr around anything that can print without going through llama.cpp's own
+    log gate — confirmed by reading llama-cpp-python's source: model construction with GPU
+    offload (`internals.LlamaModel(...)`, where the Vulkan backend picks a device) is not
+    wrapped by their own suppress_stdout_stderr, unlike llama_backend_init()/llama_numa_init().
+
+    On Windows this redirects two separate things, because one alone was not enough:
+      - `os.dup2` rewires the CRT's fd table, which a normal fprintf(stderr, ...) respects.
+      - Code that calls Win32's GetStdHandle(STD_ERROR_HANDLE) directly — which some
+        Vulkan/ggml paths do, specifically when attached to a real console rather than a
+        redirected pipe — reads the process's *standard handle*, separate state os.dup2
+        never touches. That is why testing this via a piped capture looked clean while a
+        real interactive terminal still showed the device-enumeration dump: the two
+        environments exercise different code paths inside the driver/loader. Redirecting
+        both is what closes the gap in an actual console.
+    """
     if config.SETTINGS.verbose:
         yield
         return
     fd = sys.stderr.fileno()
     saved = os.dup(fd)
     devnull = os.open(os.devnull, os.O_WRONLY)
+    saved_handle = None
     try:
         os.dup2(devnull, fd)
+        if sys.platform == "win32":
+            try:
+                import msvcrt
+
+                saved_handle = _kernel32.GetStdHandle(_STD_ERROR_HANDLE)
+                _kernel32.SetStdHandle(_STD_ERROR_HANDLE, msvcrt.get_osfhandle(devnull))
+            except Exception:  # pragma: no cover - never let this break model loading
+                saved_handle = None
         yield
     finally:
+        if sys.platform == "win32" and saved_handle is not None:
+            _kernel32.SetStdHandle(_STD_ERROR_HANDLE, saved_handle)
         os.dup2(saved, fd)
         os.close(devnull)
         os.close(saved)
@@ -124,14 +149,14 @@ class LLM:
         self.n_threads = n_threads or s.n_threads
 
         # Everything that touches llama_cpp goes inside one muted block. First contact loads
-        # the shared library and the GPU probe (llama_supports_gpu_offload) makes the Vulkan
-        # backend enumerate devices — a "ggml_vulkan: Found 1 Vulkan devices" dump printed
-        # straight to fd 2, before any callback can intercept it. Redirecting the fd for the
-        # whole first-contact is the only thing that reliably swallows it.
+        # the shared library, and GPU-offload model construction is where the Vulkan backend
+        # enumerates devices — a "ggml_vulkan: Found 1 Vulkan devices" dump that bypasses
+        # llama-cpp-python's own log gate (see _quiet's docstring). Redirecting stderr for
+        # the whole first-contact window is what reliably swallows it.
         with _quiet():
             from llama_cpp import Llama  # deferred: importing costs ~1s
 
-            _silence_llama_logs()  # no-op callback for any later logging
+            _quiet_llama_logging()  # raise their log gate too, belt-and-suspenders
             self.n_gpu_layers = (
                 gpu_offload_default() if n_gpu_layers is None else n_gpu_layers
             )
