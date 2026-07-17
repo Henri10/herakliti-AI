@@ -1,0 +1,41 @@
+# Herakliti-AI — Python 3.12 required.
+#
+# Python 3.14 will NOT work: llama-cpp-python publishes no cp314 wheel and only a
+# source tarball on PyPI, so pip would try to compile llama.cpp with MSVC.
+#
+# Install (Windows, from the project root):
+#   py -3.12 -m venv .venv
+#   .venv\Scripts\python -m pip install -r requirements.txt
+#
+# THEN replace llama-cpp-python with the Vulkan build — measured 5.5x faster prefill
+# on Intel Iris Xe (76.7s -> 14.0s for a 1730-token prompt). PyPI's default wheel is
+# CPU-only and there is no Vulkan wheel on PyPI, so it needs its own index:
+#
+#   .venv\Scripts\python -m pip install --force-reinstall --no-deps ^
+#     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/vulkan ^
+#     llama-cpp-python==0.3.34
+#
+# No NVIDIA GPU is needed. If you have no usable Vulkan device, the plain CPU wheel
+# still works — Herakliti detects the backend at runtime and adjusts.
+
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# engine
+llama-cpp-python==0.3.34
+huggingface-hub>=1.0
+
+# embeddings / rerank (CPU)
+torch>=2.5
+sentence-transformers>=5.0
+faiss-cpu>=1.9
+
+# knowledge sources
+httpx>=0.28
+ddgs>=9.0
+trafilatura>=2.0
+
+# interfaces
+typer>=0.15
+rich>=13.0
+fastapi>=0.115
+uvicorn[standard]>=0.34

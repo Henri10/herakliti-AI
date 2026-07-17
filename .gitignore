@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.idea/
+.junie/
+.pytest_cache/
+.ruff_cache/
+
+# Herakliti runtime data: models, vector index, caches (all regenerable)
+.herakliti/
+*.gguf
+*.faiss
+*.db
+*.db-wal
+*.db-shm
